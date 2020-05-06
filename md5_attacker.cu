@@ -37,27 +37,30 @@ __device__ __host__ bool getNextPw(char* pw_set, size_t step, size_t* length, si
 }
 
 __global__ void md5_attacker(size_t len, char* word_set, char *charset, char *cracked_pw, int hash_per_thread, uint32_t *target) {
-  size_t idx = (blockIdx.x * blockDim.x + threadIdx.x) * hash_per_thread;
+  size_t idx = hash_per_thread * (blockIdx.x * blockDim.x + threadIdx.x) ;
   
   // Charset is shared by each block
   extern __shared__ char s[];
-  char local_word_set[CONST_MAX_PASSWORD_LENGTH + 1];
-  char local_word_text[CONST_MAX_PASSWORD_LENGTH + 1];
   uint32_t hash[4];
   uint32_t target_hash[4];
+  char local_word_set[CONST_MAX_PASSWORD_LENGTH + 1];
+  char local_word_text[CONST_MAX_PASSWORD_LENGTH + 1];
   
+  // Copy from unified memory to local
+  memcpy(target_hash, target, 4 * sizeof(uint32_t));
   memcpy(local_word_set, word_set, CONST_MAX_PASSWORD_LENGTH + 1);
   if (threadIdx.x == 0)
-    memcpy(s, charset, sizeof(char) * CONST_CHAR_SET_LENGTH);
-  memcpy(target_hash, target, 4 * sizeof(uint32_t));
+  memcpy(s, charset, sizeof(char) * CONST_CHAR_SET_LENGTH);
   
+  // Synchronized here to ensure the shared variable is fully copied
   __syncthreads();
   if (!getNextPw(local_word_set, idx, &len)) return;
-  for(size_t index = 0; index < hash_per_thread; index++) {
+  for (size_t index = 0; index < hash_per_thread; index++) {
     for(size_t i = 0; i < len; i++){
       local_word_text[i] = s[local_word_set[i]];
     }
     
+    // Calculate MD5 hashes
     md5((unsigned char*)local_word_text, len, hash);   
     bool isMatching = true;
     for (int j = 0; j < 4; j++) {
@@ -66,6 +69,7 @@ __global__ void md5_attacker(size_t len, char* word_set, char *charset, char *cr
         break;
       }
     }
+    // Find whether it's matching or nor
     if (isMatching) {
       memcpy(cracked_pw, local_word_text, len);
       return;
@@ -87,10 +91,10 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-
   uint32_t *md5_target;
   char *pw_set, *cracked_pw, *char_set;
 
+  // Allocated unified memory
   cudaMallocManaged((void**)&md5_target, sizeof(uint32_t) * 4);
   cudaMallocManaged((void**)&pw_set, sizeof(char) * (CONST_MAX_PASSWORD_LENGTH + 1));
   cudaMallocManaged((void**)&cracked_pw, sizeof(char) * (CONST_MAX_PASSWORD_LENGTH + 1));
@@ -124,12 +128,17 @@ int main(int argc, char* argv[]) {
 
   while(true) {
     md5_attacker<<<block_num, thread_per_block, CONST_CHAR_SET_LENGTH>>>(h_word_len, pw_set, char_set, cracked_pw, hash_per_thread, md5_target);
+    
+    // wait to finish
     cudaDeviceSynchronize();
+
+    // Check whether this round has found the target
     if (*cracked_pw != 0) {     
       cout << cracked_pw << endl; 
       break;
     }
 
+    // Update the pw set for next round
     if (!getNextPw(pw_set, thread_per_block * hash_per_thread * block_num, &h_word_len)) {
       cout << "Password Not Found" << endl;
       break;

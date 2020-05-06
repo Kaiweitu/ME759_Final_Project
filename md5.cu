@@ -31,9 +31,9 @@
  **********************************************************************
  */
 
- #include <stdio.h>
- #include <stdlib.h>
- #include <stdint.h>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstdint>
  
  
  #define F(x, y, z) (((x) & (y)) | ((~x) & (z)))
